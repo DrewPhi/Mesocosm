@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Eden · World Observatory</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><div><span class="eyebrow">MESOCOSM / WORLD OBSERVATORY</span><h1>EDEN<span class="dot">●</span></h1></div><div id="clock">Connecting…</div><div id="status" class="badge">OFFLINE</div></header>
+<nav aria-label="Simulation controls"><button data-command="pause">Pause</button><button data-command="resume">Resume</button><button data-command="step">Step event</button><select id="speed" aria-label="Simulation speed"><option value="0">Maximum speed</option><option value="1">1×</option><option value="10">10×</option><option value="100">100×</option></select><button data-command="checkpoint">Checkpoint</button><span class="spacer"></span><button id="live">Live / latest</button><span id="cursor">Event —</span></nav>
+<div id="notice" role="status"></div>
+<main>
+<section class="world panel"><div class="panel-title"><span>01 / SHARED REALITY</span><select id="follow" aria-label="Follow agent"></select></div><canvas id="map" aria-label="Isometric terrain and inhabitant locations"></canvas><div class="map-caption">Earth-like terrain · scroll to zoom · drag to pan <span id="model"></span></div><div class="scrubber"><label for="timeline">History</label><input id="timeline" type="range" min="1" max="1" value="1"><button id="play">Play replay</button></div></section>
+<section class="panel minds"><div class="panel-title">02 / INHABITANTS <span>Reported deliberations</span></div><div id="agents"></div></section>
+<section class="panel chronicle"><div class="panel-title">03 / CHRONICLE <span>Committed history</span></div><div id="events"></div></section>
+<section class="panel memory"><div class="panel-title">04 / PRIVATE MEMORY <select id="memory-agent" aria-label="Agent memory"></select></div><div class="file-view"><div id="files"></div><pre id="file-content">Choose an agent’s file. Empty memory is an authentic state.</pre></div></section>
+<section class="panel audit"><div class="panel-title">05 / EVENT INSPECTOR <button id="verify">Verify archive</button></div><pre id="detail">Select an event to inspect its observations, intent, referee ruling and provenance.</pre></section>
+</main><footer>Agents choose intentions. The referee judges. The kernel commits reality.</footer><script src="/app.js"></script></body></html>
