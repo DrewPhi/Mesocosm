@@ -8,7 +8,7 @@ import platform
 from pathlib import Path
 
 from .config import Config
-from .inference import Gateway, ModelError
+from .inference import Gateway, ModelError, AdjudicationError
 from . import kernel as k, terrain
 from .store import Store
 
@@ -133,7 +133,10 @@ class Engine:
             except ModelError as exc:
                 # Keep the same pending event. Server faults must not starve inhabitants.
                 self.state = before
-                self.commit("inference_error", actor, {"error": str(exc), "pending_event": event["id"]})
+                if hasattr(exc, "pending_decision"):
+                    self.state["queue"][0]["data"]["pending_decision"] = exc.pending_decision
+                self.commit("adjudication_error" if isinstance(exc, AdjudicationError) else "inference_error",
+                            actor, {"error": str(exc), "pending_event": event["id"]})
                 self.last_error = str(exc)
                 self.pause()
             except (ValueError, KeyError, TypeError, OverflowError) as exc:
@@ -160,7 +163,7 @@ class Engine:
         if actor and (not a or not a.get("alive")):
             return "event_cancelled", {"reason": "Actor no longer alive"}
         if kind == "activation":
-            return self.activate(actor)
+            return self.activate(actor, data.get("pending_decision"))
         if kind == "move_step":
             if a["busy"] != data["action"]:
                 return "event_cancelled", {"reason": "Movement interrupted"}
@@ -236,14 +239,21 @@ class Engine:
             return "birth", {"child": child, "parents": parents}
         raise ValueError(f"Unknown scheduled event {kind}")
 
-    def activate(self, actor):
+    def activate(self, actor, pending_decision=None):
         s, c = self.state, self.config
         a = s["entities"][actor]
         if a["busy"]:
             return "activation_skipped", {"reason": "Busy"}
         a["activations"] += 1
         observation = k.observe(s, actor)
-        output, call_id = self.gateway.generate("agent", {"observation": observation, "activation": a["activations"]}, actor, s["time"])
+        context = {"observation": observation, "activation": a["activations"]}
+        question = k.social_question(observation)
+        if question:
+            context["decision_question"] = question
+        if pending_decision is None:
+            output, call_id = self.gateway.generate("agent", context, actor, s["time"])
+        else:
+            output, call_id = pending_decision["output"], pending_decision["call_id"]
         a["deliberation"] = output["deliberation"]
         intent = output["intent"]
         payload = {"observation": observation, "output": output, "call_id": call_id}
@@ -252,7 +262,8 @@ class Engine:
         try:
             result = self.intent(actor, intent)
             payload.update(result)
-        except ModelError:
+        except ModelError as exc:
+            exc.pending_decision = {"output": copy.deepcopy(output), "call_id": call_id}
             raise
         except (ValueError, KeyError, TypeError, OverflowError) as exc:
             self.state = before_intent
@@ -260,6 +271,14 @@ class Engine:
             a["last_result"] = "Attempt rejected: " + str(exc)
             payload["rejection"] = str(exc)
             k.wake(self.state, actor, self.state["time"] + c.activation_seconds, c)
+        # Platform short-term experience is separate from agent-owned long-term files.
+        # Retain attempted actions so movement/inspection loops are observable to self.
+        a = self.state["entities"][actor]
+        summary = {key: copy.deepcopy(value) for key, value in intent.items()
+                   if key in {"kind", "x", "z", "target", "targets", "partner", "child", "seconds", "path", "description"}}
+        a["action_history"] = (a.get("action_history", []) + [{"time": self.state["time"], "intent": summary,
+            "outcome": payload.get("rejection") or ("started; pending completion" if a["busy"] else "completed"),
+            "public_result": payload.get("ruling", {}).get("public_result")}])[-12:]
         return "agent_decision", payload
 
     def intent(self, actor, intent):
@@ -378,27 +397,8 @@ class Engine:
         return {"result": a["last_result"]}
 
     def judge(self, actor, intent, elapsed=0):
-        s = self.state
-        nearby = [e for e in s["entities"].values() if terrain.distance(s["entities"][actor]["pos"], k.location(s, e)) <= 5]
-        ids = {e["id"] for e in nearby}
-        context = {"intent": intent, "actor": actor, "time": s["time"], "weather": s["weather"],
-                   "elapsed_seconds": elapsed, "instruction": "Assess the outcome now after elapsed time; do not charge the original duration twice." if elapsed else "Assess the proposed attempt.",
-                   "entities": [{**k.public(e), **({"needs": e["needs"], "conditions": e["conditions"]} if e["kind"] == "agent" else {})} for e in nearby],
-                   "precedents": [f for f in s["facts"] if f["scope"] in ids][-80:]}
-        for attempt in range(self.config.retries + 1):
-            ruling, call_id = self.gateway.generate("referee", context, actor, s["time"])
-            try:
-                k.text(ruling.get("public_result"))
-                k.text(ruling.get("rationale", ""), 8000)
-                k.number(ruling.get("duration"), 1, 86400)
-                if ruling["outcome"] == "rejected" and ruling["delta"]:
-                    raise ValueError("Rejected actions cannot have effects")
-                k.apply_delta(s, actor, ruling["delta"], self.config)
-                return ruling, call_id
-            except (ValueError, KeyError, TypeError) as exc:
-                context["repair_error"] = str(exc)
-                context["invalid_ruling"] = ruling
-        return {"outcome": "failed", "public_result": "Your attempt could not produce a grounded outcome.", "rationale": "Referee validation retries exhausted: " + context["repair_error"], "duration": 30, "delta": []}, call_id
+        from .referee import adjudicate
+        return adjudicate(self, actor, intent, elapsed)
 
     def environment(self):
         s, c = self.state, self.config

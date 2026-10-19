@@ -1,4 +1,5 @@
 import copy
+import json
 import math
 import posixpath
 
@@ -137,11 +138,35 @@ def public(entity):
 
 def observe(state, actor):
     a = state["entities"][actor]
+    seen = [{**public(e), "distance_m": round(terrain.distance(a["pos"], location(state, e)), 2)}
+            for e in state["entities"].values() if e["id"] != actor and visible(state, a, e)]
+    social = [{"id": e["id"], "name": e["name"], "distance_m": e["distance_m"],
+               "can_hear_you": True} for e in seen
+              if e["kind"] == "agent" and e.get("alive")
+              and terrain.distance(a["pos"], location(state, state["entities"][e["id"]])) <= 20]
+    history = a.get("action_history", [])[-6:]
+    repeated = (len(history) == 6 and all(h["intent"].get("kind") == "move" for h in history)
+                and len({json.dumps(h["intent"], sort_keys=True) for h in history}) <= 3)
     return {"sim_time": state["time"], "hour": (state["time"] / 3600 + 7) % 24,
             "weather": state["weather"], "self": {k: copy.deepcopy(a[k]) for k in ("id", "name", "pos", "needs", "conditions", "last_result", "deliberation")},
             "age_years": (state["time"] - a["born"]) / YEAR,
-            "visible": [public(e) for e in state["entities"].values() if e["id"] != actor and visible(state, a, e)],
-            "recent": a["recent"][-12:], "files": sorted(a["files"])}
+            "coordinate_convention": "pos is [x,y,z] metres; x/z horizontal, y elevation; move uses x,z",
+            "visible": seen,
+            "recent": a["recent"][-12:], "files": sorted(a["files"]),
+            "recent_actions": copy.deepcopy(history),
+            "operational_feedback": ("Your recent movement choices repeat a small set of destinations. Check whether they advance your intention. You may persist, reconsider, or choose another step." if repeated else None),
+            "social_opportunities": social}
+
+
+def social_question(observation):
+    nearby = observation.get("social_opportunities", [])
+    if not nearby:
+        return None
+    people = "; ".join(f"{p['name']} ({p['id']}) is {p['distance_m']:g} metres away" for p in nearby)
+    return (f"{people}. They are already within speaking range and can hear you. "
+            "Do you want to say anything to them? If yes, choose intent.kind=communicate "
+            "and put your own words in intent.text; no further approach is needed to speak. "
+            "If no, you may freely choose another action or wait.")
 
 
 def note(a, value):
@@ -247,13 +272,31 @@ def apply_delta(state, actor, operations, config):
     aliases = {}
     def ref(value):
         return aliases.get(value, value)
-    for operation in operations:
+    for index, operation in enumerate(operations):
         if not isinstance(operation, dict):
             raise ValueError("Delta must contain objects")
         op = operation.get("op")
+        if not isinstance(op, str) or not op:
+            raise ValueError(f'delta[{index}] requires a nonempty "op" string, e.g. '
+                             '{"op":"transfer_item","id":"object-id","holder":"agent-id"}; '
+                             'use an operation name as its value, not as a wrapper key')
+        required = {
+            "create_entity": ("type", "mass", "sources"),
+            "transfer_item": ("id", "holder"), "set_attribute": ("id", "key", "value"),
+            "change_status": ("condition",), "satisfy_need": ("need", "amount", "source"),
+            "record_fact": ("scope", "claim"), "schedule_effect": ("delay", "effect"),
+            "add_relation": ("other", "relation"), "modify_voxel": ("position", "material"),
+        }
+        if op not in required:
+            raise ValueError(f"delta[{index}]: Unsupported delta operation: {op}; "
+                             f"supported op values: {', '.join(required)}")
+        missing = [key for key in required[op] if key not in operation]
+        if missing:
+            raise ValueError(f"delta[{index}] ({op}) missing required fields: {', '.join(missing)}")
         if op == "create_entity":
             sources = operation.get("sources", [])
-            if not sources or len(sources) > 12:
+            if (not isinstance(sources, list) or not sources or len(sources) > 12
+                    or any(not isinstance(item, dict) or not {"id", "mass"} <= item.keys() for item in sources)):
                 raise ValueError("New matter requires finite source entities")
             mass = number(operation.get("mass"), .0001, 10000, "created mass")
             total = 0
@@ -283,7 +326,10 @@ def apply_delta(state, actor, operations, config):
         elif op == "transfer_item":
             e = reachable(result, actor, ref(operation["id"]))
             if e["kind"] != "object":
-                raise ValueError("Only portable objects can be transferred")
+                raise ValueError(f"delta[{index}]: Only portable objects can be transferred; "
+                                 f"{e['id']} has kind={e['kind']}. If extraction is physically justified, "
+                                 "use create_entity with sources debiting the extracted mass, then "
+                                 "transfer_item using the new alias. This does not establish feasibility.")
             target = ref(operation.get("holder"))
             if target is not None:
                 receiver = reachable(result, actor, target)

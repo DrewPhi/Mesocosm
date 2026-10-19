@@ -112,6 +112,22 @@ the environment variables documented in that file. Inference is managed separate
 the template does not allocate model GPUs. Allow enough scheduler signal lead time
 for configured inference timeouts/retries to finish.
 
+For an already installed Transformers/PyTorch environment and a cached instruction
+checkpoint, `python -m eden.hf_server --model-path /path/to/snapshot` provides a small
+single-GPU adapter. It loads only local files and binds to loopback; run it inside
+your GPU allocation. This optional adapter requires the existing model dependencies;
+the Eden simulation itself still has no runtime dependencies. Use
+`--response-format none` with this adapter because it does not constrain JSON decoding.
+
+[configs/bouchet_qwen.sbatch](configs/bouchet_qwen.sbatch) runs this adapter and a
+bounded trial in one Bouchet allocation. Set `EDEN_PROJECT_DIR`, `EDEN_ARCHIVE`,
+`EDEN_PYTHON`, and `EDEN_MODEL_PATH`. The default target is three simulated days,
+with a 30,000-event ceiling. `EDEN_MAX_EVENTS=60` selects a short smoke trial;
+`EDEN_UNTIL` changes the target in simulated seconds. The runner writes atomic
+`progress.json` reports and a rolling `latest.sqlite` checkpoint in the archive.
+Resubmitting against the same archive resumes the saved world and records the new
+inference endpoint. It never silently restarts the inhabitants.
+
 ## Implemented scope
 
 - Seeded voxel terrain, finite natural resource anchors, sparse excavation, checked
@@ -133,6 +149,40 @@ system does not guarantee survival, reproduction, or civilization.
 [docs/implementation.md](docs/implementation.md) describes current abstractions and
 remaining parts of the broader proposal, including more general environmental
 dynamics, pathfinding, developmental cognition, storage optimization, and evaluation.
+
+## Portable wireframe replay
+
+Create an offline HTML viewer from a standalone checkpoint copied to local storage:
+
+```bash
+python3 -m eden.recording --database /path/to/checkpoint.sqlite --output replay.html
+```
+
+Open the HTML file in a browser. It embeds recorded positions, agent reports,
+private-file states, event details, wireframe terrain, and recent movement trails.
+It needs no inference server, SSH tunnel, internet connection, or local web server.
+The history slider selects the recorded event; Play replay advances through events.
+
+For remote transfer, export `.json.gz` instead of `.html`, then build the viewer
+locally with `--recording snapshot.json.gz --output replay.html`. The exporter
+verifies the full source event/state hash chain. This compact spectator extract
+omits raw model requests and observation payloads; retain the full SQLite archive
+for complete auditing. Export only self-contained checkpoints, not a live database
+whose active WAL contains newer events.
+
+## Nearby conversation opportunities
+
+Each decision now includes an optional social question when another visible living
+inhabitant is within the 20-metre speech range: do they want to say anything, or
+choose another action? The model still chooses whether to speak and supplies all
+words. This cue does not create a conversation or edit anyone's private notes.
+
+For intervention experiments, `eden.trial --intervention-note "..."` records the
+operator's change and current source hashes before resuming the saved world. The
+Bouchet script accepts `EDEN_INTERVENTION_NOTE` and, optionally,
+`EDEN_DIAGNOSE_COMMUNICATION=1`. The latter asks diagnostic questions in copies of
+the agents' last recorded contexts before continuing. Replies are archived separately
+and their proposed intents are never executed in the world.
 
 ## Tests
 
